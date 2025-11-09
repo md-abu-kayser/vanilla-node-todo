@@ -1,104 +1,153 @@
+// server.js
 const http = require("http");
 const path = require("path");
-const fs = require("fs");
+const fs = require("fs").promises;
 
 const filePath = path.join(__dirname, "./db/todo.json");
 
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const pathname = url.pathname;
-
-  //GET All todos
-  if (pathname === "/todos" && req.method === "GET") {
-    const data = fs.readFileSync(filePath, { encoding: "utf-8" });
-    res.writeHead(200, {
-      "content-type": "application/json",
-    });
-
-    res.end(data);
+const readTodos = async () => {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw || "[]");
+    return parsed;
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
   }
-  //POST a ToDO
-  else if (pathname === "/todos/create-todo" && req.method === "POST") {
+};
+
+const writeTodos = async (todos) => {
+  await fs.writeFile(filePath, JSON.stringify(todos, null, 2), "utf8");
+};
+
+const makeId = () => `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
+const sendJSON = (res, status = 200, payload = {}) => {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload));
+};
+
+const parseBody = (req) =>
+  new Promise((resolve, reject) => {
     let data = "";
-
-    req.on("data", (chunk) => {
-      data = data + chunk;
-    });
-
+    req.on("data", (chunk) => (data += chunk));
     req.on("end", () => {
-      const { title, body } = JSON.parse(data);
-      const createdAt = new Date().toLocaleString();
-
-      const allTodos = fs.readFileSync(filePath, { encoding: "utf-8" });
-      const parsedAllTodos = JSON.parse(allTodos);
-      console.log(allTodos);
-
-      parsedAllTodos.push({ title, body, createdAt });
-
-      fs.writeFileSync(filePath, JSON.stringify(parsedAllTodos, null, 2), {
-        encoding: "utf-8",
-      });
-
-      res.end(JSON.stringify({ title, body, createdAt }, null, 2));
+      if (!data) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch (err) {
+        reject(new Error("Invalid JSON"));
+      }
     });
-  } else if (pathname === "/todo" && req.method === "GET") {
-    const title = url.searchParams.get("title");
-    console.log(title);
-    const data = fs.readFileSync(filePath, { encoding: "utf-8" });
-    const parsedData = JSON.parse(data);
+    req.on("error", reject);
+  });
 
-    const todo = parsedData.find((todo) => todo.title === title);
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const pathname = url.pathname;
 
-    const stringifiedTodo = JSON.stringify(todo);
-    res.writeHead(200, {
-      "content-type": "application/json",
-    });
+    // GET all todos
+    if (pathname === "/todos" && req.method === "GET") {
+      const todos = await readTodos();
+      return sendJSON(res, 200, todos);
+    }
 
-    res.end(stringifiedTodo);
-  } else if (pathname === "/todos/update-todo" && req.method === "PATCH") {
-    const title = url.searchParams.get("title");
-    let data = "";
+    // GET single todo by title OR id (prefers id if provided)
+    if (pathname === "/todo" && req.method === "GET") {
+      const id = url.searchParams.get("id");
+      const title = url.searchParams.get("title");
+      const todos = await readTodos();
+      const todo = id
+        ? todos.find((t) => t.id === id)
+        : todos.find((t) => t.title === title);
+      if (!todo) return sendJSON(res, 404, { error: "Todo not found" });
+      return sendJSON(res, 200, todo);
+    }
 
-    req.on("data", (chunk) => {
-      data = data + chunk;
-    });
+    // POST create a todo
+    if (pathname === "/todos/create-todo" && req.method === "POST") {
+      const body = await parseBody(req);
+      const { title, body: todoBody } = body;
+      if (!title || (!todoBody && todoBody !== "")) {
+        return sendJSON(res, 400, { error: "title and body are required" });
+      }
 
-    req.on("end", () => {
-      const { body } = JSON.parse(data);
+      const todos = await readTodos();
+      // Prevent duplicate title (optional)
+      if (todos.find((t) => t.title === title)) {
+        return sendJSON(res, 409, {
+          error: "Todo with this title already exists",
+        });
+      }
 
-      const allTodos = fs.readFileSync(filePath, { encoding: "utf-8" });
-      const parsedAllTodos = JSON.parse(allTodos);
+      const newTodo = {
+        id: makeId(),
+        title,
+        body: todoBody,
+        createdAt: new Date().toLocaleString(),
+      };
+      todos.push(newTodo);
+      await writeTodos(todos);
+      return sendJSON(res, 201, newTodo);
+    }
 
-      const todoIndex = parsedAllTodos.findIndex(
-        (todo) => todo.title === title
+    // PATCH update a todo by id or title
+    if (pathname === "/todos/update-todo" && req.method === "PATCH") {
+      const id = url.searchParams.get("id");
+      const titleParam = url.searchParams.get("title");
+      const payload = await parseBody(req);
+      const { body: newBody } = payload;
+      if (newBody === undefined) {
+        return sendJSON(res, 400, { error: "body is required in payload" });
+      }
+
+      const todos = await readTodos();
+      const idx = id
+        ? todos.findIndex((t) => t.id === id)
+        : todos.findIndex((t) => t.title === titleParam);
+
+      if (idx === -1) return sendJSON(res, 404, { error: "Todo not found" });
+
+      todos[idx].body = newBody;
+      await writeTodos(todos);
+      return sendJSON(res, 200, todos[idx]);
+    }
+
+    // DELETE todo by id or title
+    if (pathname === "/todos/delete-todo" && req.method === "DELETE") {
+      const id = url.searchParams.get("id");
+      const titleParam = url.searchParams.get("title");
+      if (!id && !titleParam) {
+        return sendJSON(res, 400, {
+          error: "id or title query param required",
+        });
+      }
+
+      const todos = await readTodos();
+      const filtered = todos.filter((t) =>
+        id ? t.id !== id : t.title !== titleParam
       );
 
-      parsedAllTodos[todoIndex].body = body;
+      if (filtered.length === todos.length) {
+        return sendJSON(res, 404, { error: "Todo not found" });
+      }
 
-      fs.writeFileSync(filePath, JSON.stringify(parsedAllTodos, null, 2), {
-        encoding: "utf-8",
-      });
+      await writeTodos(filtered);
+      return sendJSON(res, 200, { success: true });
+    }
 
-      res.end(
-        JSON.stringify(
-          { title, body, createdAt: parsedAllTodos[todoIndex].createdAt },
-          null,
-          2
-        )
-      );
-    });
-  } else if (pathname === "/todos/delete-todo" && req.method === "DELETE") {
-    const title = url.searchParams.get("title");
-  } else {
-    res.end("Route Not Found");
+    // fallback
+    sendJSON(res, 404, { error: "Route Not Found" });
+  } catch (err) {
+    if (err.message === "Invalid JSON") {
+      return sendJSON(res, 400, { error: "Invalid JSON payload" });
+    }
+    console.error(err);
+    sendJSON(res, 500, { error: "Internal Server Error" });
   }
 });
 
 server.listen(5000, "127.0.0.1", () => {
-  console.log("✅ Server listening to port 5000");
+  console.log("✅ Server listening on http://127.0.0.1:5000");
 });
-
-/**
- * /todos - GET - ALL Todo
- * /todos/create-todo POST Create Todo
- */
