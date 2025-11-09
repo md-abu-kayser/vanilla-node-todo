@@ -1,4 +1,3 @@
-// server.js
 const http = require("http");
 const path = require("path");
 const fs = require("fs").promises;
@@ -53,7 +52,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, todos);
     }
 
-    // GET single todo by title OR id (prefers id if provided)
+    // GET single todo
     if (pathname === "/todo" && req.method === "GET") {
       const id = url.searchParams.get("id");
       const title = url.searchParams.get("title");
@@ -74,7 +73,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const todos = await readTodos();
-      // Prevent duplicate title (optional)
+      // Prevent duplicate title
       if (todos.find((t) => t.title === title)) {
         return sendJSON(res, 409, {
           error: "Todo with this title already exists",
@@ -92,7 +91,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 201, newTodo);
     }
 
-    // PATCH update a todo by id or title
+    // PATCH update a todo
     if (pathname === "/todos/update-todo" && req.method === "PATCH") {
       const id = url.searchParams.get("id");
       const titleParam = url.searchParams.get("title");
@@ -114,7 +113,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, todos[idx]);
     }
 
-    // DELETE todo by id or title
+    // DELETE todo
     if (pathname === "/todos/delete-todo" && req.method === "DELETE") {
       const id = url.searchParams.get("id");
       const titleParam = url.searchParams.get("title");
@@ -149,5 +148,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(5000, "127.0.0.1", () => {
-  console.log("✅ Server listening on http://127.0.0.1:5000");
+  console.log("Server listening on http://127.0.0.1:5000");
 });
